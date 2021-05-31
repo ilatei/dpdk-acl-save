@@ -44,7 +44,7 @@
 #define OFF_IPV42PROTO (offsetof(struct rte_ipv4_hdr, next_proto_id))
 #define MBUF_IPV4_2PROTO(m) \
     rte_pktmbuf_mtod_offset((m), uint8_t *, OFF_ETHHEAD + OFF_IPV42PROTO)
-#define RX_RING_SIZE 3096
+#define RX_RING_SIZE 4096
 #define TX_RING_SIZE 128
 #define MAX_PKT_BURST 32
 #define NUM_MBUFS 65535
@@ -52,50 +52,36 @@
 #define BURST_SIZE 32
 
 
-struct rte_ring *kafka_ring0_0;
-struct rte_ring *kafka_ring1_0;
-struct rte_ring *kafka_ring2_0;
-struct rte_ring *kafka_ring3_0;
-struct rte_ring *kafka_ring0_1;
-struct rte_ring *kafka_ring1_1;
-struct rte_ring *kafka_ring2_1;
-struct rte_ring *kafka_ring3_1;
-struct rte_ring *kafka_ring0_2;
-struct rte_ring *kafka_ring1_2;
-struct rte_ring *kafka_ring2_2;
-struct rte_ring *kafka_ring3_2;
+//配置系统参数
+struct config{
+	int CATEGORIES;
+	int rule_number;
+	int pac_size_to_catch;
+	int pipeline_num;
+	int partition_use;
+	int enable_lru;
+	struct rte_ring *mbuf_ring[10];
+	struct rte_ring *lru_ring[10];
+	struct rte_ring *kafka_ring[40];
+};
+struct config global_conf;
 
-
-struct rte_ring *mbuf_ring0;
-struct rte_ring *mbuf_ring1;
-struct rte_ring *mbuf_ring2;
-struct rte_ring *mbuf_ring3;
-
-int CATEGORIES = 1;
-int rule_number = 0;
-int pac_size_to_catch = 1000000;
-
-void *ring_name[12];
-void *mbuf_ring[4];
-
-const char *kafka_topics[4] = {"flow0","flow1","flow2","flow3"};
-
-
+//Kafka生产者回调函数
 static void dr_msg_cb (rd_kafka_t *rk,
                        const rd_kafka_message_t *rkmessage, void *opaque) {
         if (rkmessage->err)
                 fprintf(stderr, "%% Message delivery failed: %s\n",
                         rd_kafka_err2str(rkmessage->err));
-//        else
-//                fprintf(stderr,
-//                        "%% Message delivered (%zd bytes, "
-//                        "partition %"PRId32")\n",
-//                        rkmessage->len, rkmessage->partition);
+       else
+               fprintf(stderr,
+                       "%% Message delivered (%zd bytes, "
+                       "partition %"PRId32")\n",
+                       rkmessage->len, rkmessage->partition);
 
-        // The rkmessage is destroyed automatically by librdkafka
+        //The rkmessage is destroyed automatically by librdkafka
 }
 
-
+//对称rss key
 static uint8_t rss_intel_key[40] = { 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
                                      0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
                                      0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
@@ -103,6 +89,7 @@ static uint8_t rss_intel_key[40] = { 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0
                                      0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A
                                    };
 
+// 网卡设置，指定五元组，使用rss
 static const struct rte_eth_conf port_conf_default = {
 	.rxmode = { .max_rx_pkt_len = RTE_ETHER_MAX_LEN,
 		    .mq_mode = ETH_MQ_RX_RSS,
@@ -110,7 +97,7 @@ static const struct rte_eth_conf port_conf_default = {
 	.rx_adv_conf = {
         .rss_conf = {
             .rss_key = rss_intel_key,
-	    .rss_key_len = 40,
+	        .rss_key_len = 40,
             .rss_hf = ETH_RSS_IPV4 | ETH_RSS_NONFRAG_IPV4_TCP | ETH_RSS_NONFRAG_IPV4_UDP,
         },
     },
@@ -127,7 +114,7 @@ struct ipv4_5tuple {
     uint16_t port_dst;
 };
 
-
+// 定义匹配区域，各区域的匹配模式、长度、在数据包中的偏移
 struct rte_acl_field_def ipv4_defs[5] = {
     /* first input field - always one byte long. */
     {
@@ -135,8 +122,7 @@ struct rte_acl_field_def ipv4_defs[5] = {
         .size = sizeof (uint8_t),
         .field_index = 0,
         .input_index = 0,
-	 .offset = 0,        
-	//.offset = offsetof (struct ipv4_5tuple, proto),
+	    .offset = 0,        
     },
 
     /* next input field (IPv4 source address) - 4 consecutive bytes. */
@@ -147,7 +133,6 @@ struct rte_acl_field_def ipv4_defs[5] = {
         .input_index = 1,
         .offset = offsetof(struct rte_ipv4_hdr, src_addr) -
             offsetof(struct rte_ipv4_hdr, next_proto_id),
-	//.offset = offsetof (struct ipv4_5tuple, ip_src),
     },
 
     /* next input field (IPv4 destination address) - 4 consecutive bytes. */
@@ -156,8 +141,7 @@ struct rte_acl_field_def ipv4_defs[5] = {
         .size = sizeof (uint32_t),
         .field_index = 2,
         .input_index = 2,
-        //.offset = offsetof (struct ipv4_5tuple, ip_dst),
-	.offset = offsetof(struct rte_ipv4_hdr, dst_addr) -
+		.offset = offsetof(struct rte_ipv4_hdr, dst_addr) -
             offsetof(struct rte_ipv4_hdr, next_proto_id),
     },
 
@@ -170,8 +154,7 @@ struct rte_acl_field_def ipv4_defs[5] = {
         .size = sizeof (uint16_t),
         .field_index = 3,
         .input_index = 3,
-        //.offset = offsetof (struct ipv4_5tuple, port_src),
-	.offset = sizeof(struct rte_ipv4_hdr) -
+	    .offset = sizeof(struct rte_ipv4_hdr) -
             offsetof(struct rte_ipv4_hdr, next_proto_id),
     },
 
@@ -180,10 +163,9 @@ struct rte_acl_field_def ipv4_defs[5] = {
         .size = sizeof (uint16_t),
         .field_index = 4,
         .input_index = 3,
-	.offset = sizeof(struct rte_ipv4_hdr) -
+	    .offset = sizeof(struct rte_ipv4_hdr) -
             offsetof(struct rte_ipv4_hdr, next_proto_id) +
             sizeof(uint16_t),        
-	//.offset = offsetof (struct ipv4_5tuple, port_dst),
     },
 };
 
@@ -200,14 +182,13 @@ struct rte_acl_param prm = {
     .max_rule_num = 8, /* maximum number of rules in the AC context. */
 };
 
-
+// 匹配时使用的数据结构
 struct acl_search_t {
     const uint8_t *data_ipv4[MAX_PKT_BURST];
     struct rte_mbuf *m_ipv4[MAX_PKT_BURST];
     uint32_t res_ipv4[MAX_PKT_BURST * 4];
     int num_ipv4;
 };
-
 
 static inline void
 prepare_one_packet(struct rte_mbuf **pkts_in, struct acl_search_t *acl,
@@ -228,7 +209,7 @@ prepare_one_packet(struct rte_mbuf **pkts_in, struct acl_search_t *acl,
     }
 }
 
-
+// 匹配预处理，丢弃未知报文，预取报文
 static inline void
 prepare_acl_parameter(struct rte_mbuf **pkts_in, struct acl_search_t *acl,
     int nb_rx)
@@ -251,15 +232,12 @@ prepare_acl_parameter(struct rte_mbuf **pkts_in, struct acl_search_t *acl,
         prepare_one_packet(pkts_in, acl, i);
 }
 
-
-
-
-
+// 网卡初始化
 static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
     struct rte_eth_conf port_conf = port_conf_default;
-    const uint16_t rx_rings = 4, tx_rings = 1;
+    const uint16_t rx_rings = global_conf.pipeline_num, tx_rings = 1;
     uint16_t nb_rxd = RX_RING_SIZE;
     uint16_t nb_txd = TX_RING_SIZE;
     int retval;
@@ -274,6 +252,9 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
                 port, strerror(-retval));
         return retval;
     }
+
+	printf("rx capa:%lx\n",dev_info.rx_offload_capa);
+    printf("tx capa:%lx\n",dev_info.tx_offload_capa);
     if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
         port_conf.txmode.offloads |=
             DEV_TX_OFFLOAD_MBUF_FAST_FREE;
@@ -284,7 +265,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
     retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, &nb_txd);
     if (retval != 0)
         return retval;
-    /* Allocate and set up 1 RX queue per Ethernet port. */
+    /* Allocate and set up n RX queue per Ethernet port. */
     for (q = 0; q < rx_rings; q++) {
         retval = rte_eth_rx_queue_setup(port, q, nb_rxd,
                 rte_eth_dev_socket_id(port), NULL, mbuf_pool);
@@ -315,204 +296,463 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
             addr.addr_bytes[0], addr.addr_bytes[1],
             addr.addr_bytes[2], addr.addr_bytes[3],
             addr.addr_bytes[4], addr.addr_bytes[5]);
+            
     /* Enable RX in promiscuous mode for the Ethernet device. */
     retval = rte_eth_promiscuous_enable(port);
     if (retval != 0)
         return retval;
+
     return 0;
 }
 
-/*
- * The lcore main. This is the main thread that does the work, reading from
- * an input port and writing to an output port.
- */
+// 每秒输出一次网卡信息
+static void
+lcore_info(void){
+	struct rte_eth_stats stats;
+	time_t lt0,lt;
+	lt0 = time(&lt0);
+	while(1){
+		lt = time(&lt);
+		if(lt-lt0 > 1){
+    			rte_eth_stats_get(0, &stats);
+    			printf("%ld ipackets %ld imissed %ld ierrors %ld ibytes\n",stats.ipackets,stats.imissed,stats.ierrors,stats.ibytes);
+    			lt0 = lt;
+		}	
+	}	
+}
+
+// Kafka生产者线程
 static void
 lcore_kafka(void)
 {
 	rd_kafka_t *rk;         /* Producer instance handle */
-        rd_kafka_conf_t *conf;  /* Temporary configuration object */
-        char errstr[512];       /* librdkafka API error reporting buffer */
-        char *buf;              /* Message value temporary buffer */
-        const char *brokers;    /* Argument: broker list */
-        const char *topic;      /* Argument: topic to produce to */
+    rd_kafka_conf_t *conf;  /* Temporary configuration object */
+    char errstr[512];       /* librdkafka API error reporting buffer */
+    char *buf;              /* Message value temporary buffer */
+    const char *brokers;    /* Argument: broker list */
+    const char *topic;      /* Argument: topic to produce to */
 
-	char pac[50000];
+	char pac[43000];
 
-	int _id = rte_lcore_id();
-	printf("%d core run as kafka producer\n",_id);
+	int coreid = rte_lcore_id();
+	int pipe = global_conf.pipeline_num;
+	int partition = global_conf.partition_use;
+	coreid -= pipe*3;
+	printf("%d core run as kafka producer to partition %d\n",coreid,coreid%partition);
+	struct rte_ring * _kafka_ring = (struct rte_ring *)global_conf.kafka_ring[coreid%(pipe*partition)];
 
-	struct rte_ring *kafka_ring;
-	kafka_ring = (struct rte_ring *)ring_name[(_id+4)%12];
 
-
-        brokers = "localhost:9092";
-        topic = kafka_topics[_id%4];
+    brokers = "localhost:9092";
+    const char *kafka_topics[8] = {"single0","single1","single2","single3","single4","single5","single6","single7"};
+    topic = kafka_topics[coreid/partition];
 
 	/*
          * Create Kafka client configuration place-holder
-         */
-        conf = rd_kafka_conf_new();
+     */
+    conf = rd_kafka_conf_new();
 
-	rd_kafka_conf_set(conf,"queue.buffering.max.messages", "10000000",NULL,0);
-	rd_kafka_conf_set(conf,"queue.buffering.max.kbytes", "3072000",NULL,0);
-	rd_kafka_conf_set(conf,"queue.buffering.max.ms","200",NULL,0);
-	rd_kafka_conf_set(conf,"linger.ms","200",NULL,0);
+	rd_kafka_conf_set(conf,"queue.buffering.max.messages", "256000",NULL,0);
+	rd_kafka_conf_set(conf,"queue.buffering.max.kbytes", "1024000",NULL,0);
+	rd_kafka_conf_set(conf,"queue.buffering.max.ms","20",NULL,0);
+	rd_kafka_conf_set(conf,"linger.ms","20",NULL,0);
 
-	rd_kafka_conf_set(conf,"batch.num.messages","25000",NULL,0);
-	rd_kafka_conf_set(conf,"batch.size","10000000",NULL,0);
-
-
-        /* Set bootstrap broker(s) as a comma-separated list of
-         * host or host:port (default port 9092).
-         * librdkafka will use the bootstrap brokers to acquire the full
-         * set of brokers from the cluster. */
-        if (rd_kafka_conf_set(conf, "bootstrap.servers", brokers,
-                              errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
-                fprintf(stderr, "%s\n", errstr);
-        }
+	rd_kafka_conf_set(conf,"batch.num.messages","250000",NULL,0);
+	rd_kafka_conf_set(conf,"batch.size","100000000",NULL,0);
 
 
-        /* Set the delivery report callback.
-         * This callback will be called once per message to inform
-         * the application if delivery succeeded or failed.
-         * See dr_msg_cb() above.
-         * The callback is only triggered from rd_kafka_poll() and
-         * rd_kafka_flush(). */
-        rd_kafka_conf_set_dr_msg_cb(conf, dr_msg_cb);
+	/* Set bootstrap broker(s) as a comma-separated list of
+		* host or host:port (default port 9092).
+		* librdkafka will use the bootstrap brokers to acquire the full
+		* set of brokers from the cluster. */
+    if (rd_kafka_conf_set(conf, "bootstrap.servers", brokers,
+                  errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
+        fprintf(stderr, "%s\n", errstr);
+    }
 
-	        /*
-         * Create producer instance.
-         *
-         * NOTE: rd_kafka_new() takes ownership of the conf object
-         *       and the application must not reference it again after
-         *       this call.
-         */
-        rk = rd_kafka_new(RD_KAFKA_PRODUCER, conf, errstr, sizeof(errstr));
-        if (!rk) {
-                fprintf(stderr,
-                       "%% Failed to create new producer: %s\n", errstr);         
-        }
+
+	/* Set the delivery report callback.
+		* This callback will be called once per message to inform
+		* the application if delivery succeeded or failed.
+		* See dr_msg_cb() above.
+		* The callback is only triggered from rd_kafka_poll() and
+		* rd_kafka_flush(). */
+    rd_kafka_conf_set_dr_msg_cb(conf, dr_msg_cb);
+
+	/*
+	* Create producer instance.
+	*
+	* NOTE: rd_kafka_new() takes ownership of the conf object
+	*       and the application must not reference it again after
+	*       this call.
+	*/
+    rk = rd_kafka_new(RD_KAFKA_PRODUCER, conf, errstr, sizeof(errstr));
+    if (!rk) {
+        fprintf(stderr,
+               "%% Failed to create new producer: %s\n", errstr);         
+    }
 	
 	rd_kafka_resp_err_t err;
-	//int pac_saved=0;
 
 	int total_length = 0;
 	char *locate = pac;
 	int burst_size=0,i=0;
 
+
 	while(1){
-	if(rte_ring_empty(kafka_ring)){
+	if(rte_ring_empty(_kafka_ring)){
 		rd_kafka_poll(rk,0);
 		if(total_length!=0){
 			goto retry;
 		}
 		continue;
 	}
-	struct rte_mbuf *burst_buffer[64] = { NULL };
-//	int remain;
-	burst_size=rte_ring_dequeue_burst(kafka_ring,(void *)burst_buffer,64,NULL);
-//	if(remain > 256 * 32){
-//		printf("%d ",remain);
-//	}
-//
-//	for(i=0;i<burst_size;i++){
-//		rte_pktmbuf_free(burst_buffer[i]);
-//	}
-//	continue;
+	struct rte_mbuf *burst_buffer[32] = { NULL };
+
+	burst_size=rte_ring_dequeue_burst(_kafka_ring,(void *)burst_buffer,32,NULL);
 
 
 	for(i=0;i<burst_size;){
 		buf = rte_pktmbuf_mtod(burst_buffer[i], char *);
-        	int len = rte_pktmbuf_pkt_len(burst_buffer[i]);
+        int len = rte_pktmbuf_pkt_len(burst_buffer[i]);
+
+		//添加时间戳、报文长度
+		memcpy(locate,&(burst_buffer[i]->timestamp),8);
+	
+		locate+=8;
+		total_length+=8;
 		
 		memcpy(locate,&len,4);
-
 		
 		locate+=4;
 		total_length+=4;
-        	memcpy(locate,buf,len);
+        memcpy(locate,buf,len);
 		locate+=len;
-		burst_buffer[i]->udata64--;
-//		if(burst_buffer[i]->udata64 == 0)
-        		rte_pktmbuf_free(burst_buffer[i]);
-        	total_length+=len;
-        	i++;
-        	if(total_length<=40960){
-        		continue;
-        	}
+       
+        rte_pktmbuf_free(burst_buffer[i]);
+        total_length+=len;
+        i++;
+
+		//累计数据到40KB才进行入队操作
+    	if(total_length<=40960){
+    		continue;
+     	}
 	retry:
-              err = rd_kafka_producev(    
-                        rk,                 
-                        RD_KAFKA_V_TOPIC(topic),                       
-                        RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),			
-                        RD_KAFKA_V_VALUE(pac, total_length),
-                    	RD_KAFKA_V_PARTITION((_id+4)%3),		     	
-                        RD_KAFKA_V_OPAQUE(NULL),                       
-                        RD_KAFKA_V_END);
+            err = rd_kafka_producev(    
+                    rk,                 
+                    RD_KAFKA_V_TOPIC(topic),                       
+                    RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),			
+                    RD_KAFKA_V_VALUE(pac, total_length),
+                	RD_KAFKA_V_PARTITION(coreid%partition),		     	
+                    RD_KAFKA_V_OPAQUE(NULL),                       
+                    RD_KAFKA_V_END);
 
-		if (err) {
-                        fprintf(stderr,
-                                "%% Failed to produce to topic %s: %s\n",
-                                topic, rd_kafka_err2str(err));
+		if(err){
+                fprintf(stderr,
+                        "%% Failed to produce to topic %s: %s\n",
+                        topic, rd_kafka_err2str(err));
 
-                        if (err == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
-                                printf("queue full");
-                                rd_kafka_poll(rk, 1000);
-                                goto retry;
-                        }
+                if (err == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
+                    printf("queue full");
+                    rd_kafka_poll(rk, 1000);
+                    goto retry;
                 }
+        }
 
 
 		locate = pac;
 		total_length = 0;
-
 	}
-          rd_kafka_poll(rk, 0/*non-blocking*/);
-	}
+    rd_kafka_poll(rk, 0/*non-blocking*/);
+    }
 
-	fprintf(stderr, "%% Flushing final messages..\n");
-        rd_kafka_flush(rk, 10*1000 /* wait for max 10 seconds */);
-
-        /* If the output queue is still not empty there is an issue
-         * with producing messages to the clusters. */
-        if (rd_kafka_outq_len(rk) > 0)
-                fprintf(stderr, "%% %d message(s) were not delivered\n",
-                        rd_kafka_outq_len(rk));
-
-        /* Destroy the producer instance */
-        rd_kafka_destroy(rk);
+    /* Destroy the producer instance */
+    rd_kafka_destroy(rk);
 	return;
 }
 
 
+//大象流识别用的数据结构
+struct _flow{
+	unsigned int addr;	//源ip地址
+	int type;			//流位于lru1还是lru2中
+	long rss;
+	long len;			//累计数据量
+	struct _flow *prev;	//前一个flow
+	struct _flow *next; //后一个flow
+	struct _list *toList;//对应的list记录
+};
+
+struct _list{
+	struct _list *prev;	//前一个list
+	struct _list *next;	//后一个list
+	struct _flow *toFlow;	//对于的flow记录
+};
+
+//生成一个f对应的list节点，添加在tail之后，返回该节点
+static struct _list* addToLru(struct _flow* f, struct _list* tail) {
+	tail->toFlow = f;
+	f->toList = tail;
+	struct _list* q = (struct _list*)malloc(sizeof(struct _list));
+	q->prev = tail;
+	tail->next = q;
+	tail = q;
+	return tail;
+}
+
+//将f对应的list节点移到tail之后，返回该节点
+static struct _list* updateLru(struct _flow* f, struct _list* tail) {
+	struct _list* l = f->toList;
+
+	if (l->next == tail) {
+		return tail;
+	}
+
+	if (l->prev != NULL) {
+		l->prev->next = l->next;
+		l->next->prev = l->prev;
+	}
+	else {
+		l->next->prev = NULL;
+	}
+	l->next = tail;
+	tail->prev->next = l;
+	l->prev = tail->prev;
+	tail->prev = l;
+
+	return tail;
+}
+
+//删除head及其对应的flow节点
+static struct _list* removeLru(struct _list* head){
+	struct _list* q = head->next;
+	struct _flow* f = head->toFlow;
+
+	if(f->next == NULL){
+		f->prev->next = NULL;
+	}
+	else{
+		f->prev->next = f->next;	
+		f->next->prev = f->prev;
+	}
+	
+	free(head->toFlow);
+		
+	q->prev = head->prev;
+	free(head);
+	head = q;
+	return head;
+}
+
+//将f对应的list节点从LRU1移动到LRU2尾部
+static void addToQ2(struct _flow* f, struct _list* tail){
+	struct _list* q = f->toList;
+	q->prev->next = q->next;
+	q->next->prev = q->prev;
+
+	q->next = tail;
+	q->prev = tail->prev;
+	q->prev->next = q;
+	tail->prev = q;
+}
+
+//大象流识别模块
+static void lcore_lru(void){
+	struct rte_ring *_mbuf_ring,*_lru_ring;
+	int _id = rte_lcore_id();
+	int pipe = global_conf.pipeline_num;
+	_mbuf_ring = global_conf.mbuf_ring[_id%pipe];
+	_lru_ring =  global_conf.lru_ring[_id%pipe];
+	struct rte_mbuf *bufs[32] = { NULL };
+	int nb_rx,i;
+	int pac_get=0;
+	if(!global_conf.enable_lru){
+		while(1){
+			nb_rx=rte_ring_dequeue_burst(_lru_ring,(void *)bufs,32,NULL);
+			rte_ring_enqueue_burst(_mbuf_ring,(void *)bufs,nb_rx,NULL);
+		}
+	}
+	printf("core %d lru\n",_id);
+
+	const int lru_max = 20000;	//存储流记录的数量
+    const int lru_max1 = 500;	//存储大象流的最大数量
+    const int lru_trigger = 1024*1024;	//大象流阈值
+    const int hash_list_size = 20001;	//hash表长度
+    const int hash_list_len = 4;		//hash表每个桶链表最大长度
+    int list_len;
+    int lru_size = 0;
+    int lru_size1 = 0;
+    int lru_update = 0;
+    int lru_remove = 0;
+
+	//初始化hash表
+	struct _flow *ff[hash_list_size];
+	struct _list* head = (struct _list*)malloc(sizeof(struct _list));
+	struct _list* tail = (struct _list*)malloc(sizeof(struct _list));
+	head->next = tail;
+	tail->prev = head;
+
+	struct _list* head1 = (struct _list*)malloc(sizeof(struct _list));
+	struct _list* tail1 = (struct _list*)malloc(sizeof(struct _list));
+	head1->next = tail1;
+	tail1->prev = head1;
+	
+	for(i=0;i<hash_list_size;i++){
+		ff[i] = (struct _flow*)malloc(sizeof(struct _flow));
+		ff[i]->next = NULL;
+		ff[i]->prev = NULL;
+	}
+
+	struct rte_ipv4_hdr *ipv4_hdr;
+	
+	while(1){
+		list_len=0;
+		nb_rx=rte_ring_dequeue_burst(_lru_ring,(void *)bufs,32,NULL);
+		pac_get+=nb_rx;
+		if(nb_rx == 0){
+			continue;
+		}		
+		for(i=0;i<nb_rx;i++){
+			int hash = bufs[i]->hash.rss%hash_list_size;
+			int len = rte_pktmbuf_pkt_len(bufs[i]);
+
+			if (RTE_ETH_IS_IPV4_HDR(bufs[i]->packet_type)){
+				ipv4_hdr = rte_pktmbuf_mtod_offset(bufs[i], struct rte_ipv4_hdr *,sizeof(struct rte_ether_hdr));
+			}
+			else{
+				goto end;
+			}
+			if(ff[hash]->next==NULL){
+				struct _flow *f;
+				f = (struct _flow*)malloc(sizeof(struct _flow));
+				f->addr = ipv4_hdr->src_addr;
+				f->type=1;      //node in lru1
+				f->rss = bufs[i]->hash.rss;
+				f->len=len;
+				f->next = NULL;
+				ff[hash]->next = f;
+				f->prev = ff[hash];
+				if(lru_size < lru_max){
+					lru_size++;	
+					tail = addToLru(f,tail);
+				}
+				else{
+					lru_remove++;
+					head->next = removeLru(head->next);
+					tail = addToLru(f,tail);
+				}
+			}
+			else{
+				struct _flow *fff;
+				struct _flow *p;
+				fff = p = ff[hash]->next;
+
+				while(1){
+					if(ipv4_hdr->src_addr == p->addr&& p->rss == bufs[i]->hash.rss){
+						p->len+=len;
+						if(p->len > lru_trigger){
+							if(p->type==1){
+								p->type = 2;
+								printf("elephent flow(rss:%d,s_ip:%d,d_ip:%d)\n)",p->rss,ipv4_hdr->src_addr,ipv4_hdr->dst_addr);
+								if(lru_size1>=lru_max1){
+									head1->next = removeLru(head1->next);
+									addToQ2(p,tail1);
+								}
+								else{
+									lru_size1++;
+									addToQ2(p,tail1);
+								}
+								lru_size--;
+							}
+						}
+						else{
+							lru_update++;
+							if(p->type==1){
+								tail = updateLru(p,tail);
+							}
+							else{
+								tail1 = updateLru(p,tail1);
+							}
+						}
+						goto end;
+					}
+					if(p->next == NULL){
+						break;
+					}
+					p = p->next;
+					
+					if(p->len < fff->len){
+						fff = p;
+					}
+					list_len++;
+					if(list_len > hash_list_len){
+						if(fff->type==2){
+							goto end;
+						}
+						fff->addr=ipv4_hdr->src_addr;
+						fff->len=len;
+						fff->type=1;
+						fff->rss = bufs[i]->hash.rss;
+						tail = updateLru(fff,tail);
+						goto end;
+					}
+				}								
+				fff = (struct _flow*)malloc(sizeof(struct _flow));
+				fff->addr=ipv4_hdr->src_addr;
+				fff->len=len;
+				fff->type=1;
+				fff->rss = bufs[i]->hash.rss;
+				fff->next=NULL;
+				fff->prev = p;
+				p->next = fff;	
+				if(lru_size < lru_max){
+					lru_size++;
+					tail = addToLru(fff,tail);
+				}
+				else{
+					head->next = removeLru(head->next);
+					lru_remove++;
+					tail = addToLru(fff,tail);
+				}									
+			}
+end:			continue;
+		}
+		rte_ring_enqueue_burst(_mbuf_ring,(void *)bufs,nb_rx,NULL);
+	}
+}
+
+//流量过滤模块
 static void lcore_acl(void)
 {
 	struct acl_search_t acl_search;
-	int i,_id;
+	int i,_id,pipe;
 	struct rte_ring *_mbuf_ring;
 
 	_id = rte_lcore_id();
+	pipe = global_conf.pipeline_num;
 	printf("core %d acl\n",_id);
-	_mbuf_ring =(struct rte_ring *) mbuf_ring[_id%4];
+	_mbuf_ring =(struct rte_ring *) global_conf.mbuf_ring[_id%pipe];
 
 	struct rte_mbuf *bufs[32] = { NULL };
 	int nb_rx;
 	int pac_get=0;
 	int pac_acl=0;
 	int pac_free=0;
-	struct rte_eth_stats stats;
 
-
+	time_t lt0,lt;
+	lt0 = time(&lt0);
 	
 	while(1){
 		nb_rx=rte_ring_dequeue_burst(_mbuf_ring,(void *)bufs,32,NULL);
+
+		//每10秒输出一次信息
+		lt = time(&lt);
+		if(lt-lt0 > 10){
+    		printf("core %d get %d and acled %d freed %d\n",_id,pac_get,pac_acl,pac_free);
+			lt0 = lt;
+		}
 		
 		if(nb_rx == 0){
 			continue;
-		}
-		
-		for(i=0;i<nb_rx*CATEGORIES;i++){
-			acl_search.res_ipv4[i]=0;
 		}
 
 		prepare_acl_parameter(bufs, &acl_search, nb_rx);
@@ -520,88 +760,41 @@ static void lcore_acl(void)
 		rte_acl_classify_alg(
         		acx,
         		acl_search.data_ipv4,
-        	        acl_search.res_ipv4,
-        	        acl_search.num_ipv4,
-        	        1,
-        	        RTE_ACL_CLASSIFY_SCALAR);
-
-        	
-//		printf("%d\n",nb_rx);
-//		for(i=0;i<nb_rx;i++){
-//			rte_pktmbuf_free(bufs[i]);
-//		}
-//		continue;
+        	    acl_search.res_ipv4,
+        	    acl_search.num_ipv4,
+        	    1,
+        	    RTE_ACL_CLASSIFY_SCALAR);
 
 		int choice;
 		int j;
 		
 		for(i=0;i<acl_search.num_ipv4;i++){
-			choice = acl_search.m_ipv4[i]->hash.rss %3;
+			//choice = acl_search.m_ipv4[i]->hash.rss % 10007 % global_conf.partition_use;
+			choice = pac_acl % global_conf.partition_use;
+			
 			acl_search.m_ipv4[i]->udata64 = 0;
-			for(j=0;j<CATEGORIES;j++){
-				if(acl_search.res_ipv4[i*CATEGORIES+j]==0){
+			for(j=0;j<global_conf.CATEGORIES;j++){//多个类别的规则分别处理
+				if(acl_search.res_ipv4[i*global_conf.CATEGORIES+j]==0){//未能匹配
 					rte_pktmbuf_free(acl_search.m_ipv4[i]);
 					pac_free++;
 					continue;
 				}
-				if(_id%4==0){
-					pac_acl++;
-//					acl_search.m_ipv4[i]->udata64++;
-					if(choice == 0)
-						rte_ring_enqueue(kafka_ring0_0,(void*)acl_search.m_ipv4[i]);
-					else if(choice == 1)
-						rte_ring_enqueue(kafka_ring0_1,(void*)acl_search.m_ipv4[i]);
-					else 
-						rte_ring_enqueue(kafka_ring0_2,(void*)acl_search.m_ipv4[i]);
-				}
-				else if(_id%4==1){
-//					acl_search.m_ipv4[i]->udata64++;
-					pac_acl++;
-					if(choice == 0)
-						rte_ring_enqueue(kafka_ring1_0,(void*)acl_search.m_ipv4[i]);
-					else if(choice == 1)
-						rte_ring_enqueue(kafka_ring1_1,(void*)acl_search.m_ipv4[i]);
-					else 
-						rte_ring_enqueue(kafka_ring1_2,(void*)acl_search.m_ipv4[i]);
-				}
-				else if(_id%4==2){
-//					acl_search.m_ipv4[i]->udata64++;
-					pac_acl++;
-					if(choice == 0)
-						rte_ring_enqueue(kafka_ring2_0,(void*)acl_search.m_ipv4[i]);
-					else if(choice == 1)
-						rte_ring_enqueue(kafka_ring2_1,(void*)acl_search.m_ipv4[i]);
-					else 
-						rte_ring_enqueue(kafka_ring2_2,(void*)acl_search.m_ipv4[i]);
-				}
-				else if(_id%4==3){
-//					acl_search.m_ipv4[i]->udata64++;
-					pac_acl++;
-					if(choice == 0)
-						rte_ring_enqueue(kafka_ring3_0,(void*)acl_search.m_ipv4[i]);
-					else if(choice == 1)
-						rte_ring_enqueue(kafka_ring3_1,(void*)acl_search.m_ipv4[i]);
-					else 
-						rte_ring_enqueue(kafka_ring3_2,(void*)acl_search.m_ipv4[i]);
-				}
-			}
+				
+			    pac_acl++;
+			    acl_search.m_ipv4[i]->udata64++;
+			    rte_ring_enqueue(global_conf.kafka_ring[(_id % pipe)*global_conf.partition_use + choice],(void*)acl_search.m_ipv4[i]);	
+		    }
 		}
 		pac_get+=nb_rx;
-			if(pac_get >= pac_size_to_catch){
-			memset(&stats, 0, sizeof(stats));
-    			rte_eth_stats_get(0, &stats);
-    			printf("%ld ipackets %ld imissed %ld ierrors\n",stats.ipackets,stats.imissed,stats.ierrors);
-			printf("core %d get %d and acled %d freed %d\n",_id,pac_get,pac_acl,pac_free);
-			}
 	}
 }
 
 
+//流量捕获模块
 static void
 lcore_main(void)
 {
 
-	int pac_cnt=0;
     uint16_t port;
     /*
      * Check that the port is on the same NUMA node as the polling thread
@@ -614,38 +807,34 @@ lcore_main(void)
             printf("WARNING, port %u is on remote NUMA node to "
                     "polling thread.\n\tPerformance will "
                     "not be optimal.\n", port);
-    printf("\nCore %u receiving packets\n",
-            rte_lcore_id());
 
 
     rte_eth_stats_reset(0);
     int coreid = rte_lcore_id();
-    struct rte_ring *_mbuf_ring =(struct rte_ring *) mbuf_ring[coreid];
+    struct rte_ring *_lru_ring = global_conf.lru_ring[coreid];
+
+
+    printf("\nCore %u receiving packets and pass to lru_ring\n",rte_lcore_id());
     /* Run until the application is quit or killed. */
 
 	int i;
-	unsigned int res;
-     while(true) {
-            struct rte_mbuf *bufs[BURST_SIZE];
+    while(true) {
+        struct rte_mbuf *bufs[BURST_SIZE];
 
-            const uint16_t nb_rx = rte_eth_rx_burst(0, coreid,
-                    bufs, BURST_SIZE);
-            if (unlikely(nb_rx == 0))
-                continue;
-		
-        
-        if(pac_cnt>=pac_size_to_catch){
-        	for(i=0;i<nb_rx;i++){
-        		rte_pktmbuf_free(bufs[i]);
-        	}
+        const uint16_t nb_rx = rte_eth_rx_burst(0, coreid,
+                bufs, BURST_SIZE);
+        if (unlikely(nb_rx == 0))
+            continue;
+            
+        for(i=0;i<nb_rx;i++){
+        	bufs[i]->timestamp = rte_rdtsc();//添加时间戳
+//         	rte_ring_enqueue(_lru_ring,bufs[i]);
         }
-        else{
-        		rte_ring_enqueue_burst(_mbuf_ring,(void *)bufs,nb_rx,&res);
-        }
-        pac_cnt+=nb_rx;
+    	rte_ring_enqueue_burst(_lru_ring,(void *)bufs,nb_rx,NULL);    	  
     }
 }
 
+//解析过滤规则
 static int 
 ipv4_5_tuple_parse(void){
 	int s_addr0,s_addr1,s_addr2,s_addr3,s_addr_mask;
@@ -679,23 +868,23 @@ ipv4_5_tuple_parse(void){
 	//	printf("%d %x\n",protol,protol_mask);
 	
 		/* source IPv4 */
-         acl_rules[number].field[1].value.u32 = RTE_IPV4(s_addr0,s_addr1,s_addr2,s_addr3);
-         acl_rules[number].field[1].mask_range.u32 = s_addr_mask;
+        acl_rules[number].field[1].value.u32 = RTE_IPV4(s_addr0,s_addr1,s_addr2,s_addr3);
+        acl_rules[number].field[1].mask_range.u32 = s_addr_mask;
 
 	    printf("%d.%d.%d.%d\n",s_addr0,s_addr1,s_addr2,s_addr3);
 	    printf("%d\n",s_addr_mask);
 
         /* destination IPv4 */
 	    acl_rules[number].field[2].value.u32 = RTE_IPV4(d_addr0,d_addr1,d_addr2,d_addr3);
-         acl_rules[number].field[2].mask_range.u32 = d_addr_mask;
+        acl_rules[number].field[2].mask_range.u32 = d_addr_mask;
 
         /* source port */
 		acl_rules[number].field[3].value.u16 = s_port;
 		acl_rules[number].field[3].mask_range.u16 = s_port_mask;
 
         /* destination port */
-         acl_rules[number].field[4].value.u16 = d_port;
-         acl_rules[number].field[4].mask_range.u16 = d_port_mask;
+        acl_rules[number].field[4].value.u16 = d_port;
+        acl_rules[number].field[4].mask_range.u16 = d_port_mask;
          
 	    number ++;	
 	}
@@ -703,10 +892,71 @@ ipv4_5_tuple_parse(void){
 	return number;
 }
 
-/*
- * The main function, which does initialization and calls the per-lcore
- * functions.
- */
+static void catnum2string(int num,char* res){
+	int i=strlen(res);
+	if(num >= 10){
+		res[i++] = ('0'+ num/10);
+		num = num % 10;
+	}
+	res[i++] = ('0'+num);
+	res[i] = '\0';
+}
+
+//读取配置信息
+static void
+parse_conf(void){
+	FILE *conf = fopen("config.txt","r");
+	char arg[20];
+	int arg_num;
+	global_conf.enable_lru = 1;
+	global_conf.pac_size_to_catch = 25000000;
+	while(fscanf(conf,"%s %d\n",arg,&arg_num)!=EOF){
+		if(strcmp(arg,"pac_size_to_catch") == 0){
+			global_conf.pac_size_to_catch = arg_num;	
+		}
+		else if(strcmp(arg,"pipeline_num") == 0){
+			global_conf.pipeline_num = arg_num;	
+		}
+		else if(strcmp(arg,"partition_use") == 0){
+			global_conf.partition_use = arg_num;	
+		}
+		else if(strcmp(arg,"enable_lru") == 0){
+			global_conf.enable_lru = arg_num;	
+		}
+		else{
+			printf("please check config\n");
+		}
+	}
+	
+	global_conf.CATEGORIES = 1;
+
+    int i;
+    const char ringName[20] = "kafka_ring";
+    const char mbufName[20] = "mbuf_ring";
+    const char lruName[20] = "lru_ring";
+    char NameT[20];
+   
+    for(i=0;i<global_conf.pipeline_num * global_conf.partition_use;i++){
+    		strcpy(NameT,ringName);
+    		catnum2string(i,NameT);
+    		global_conf.kafka_ring[i] = rte_ring_create(NameT, 65536, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    		printf("%s\n",NameT);
+    }
+    for(i=0;i<global_conf.pipeline_num;i++){
+    		strcpy(NameT,mbufName);
+    		catnum2string(i,NameT);
+    		global_conf.mbuf_ring[i] = rte_ring_create(NameT, 65536, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    		printf("%s\n",NameT);
+    }
+    for(i=0;i<global_conf.pipeline_num;i++){
+    		strcpy(NameT,lruName);
+    		catnum2string(i,NameT);
+    		global_conf.lru_ring[i] = rte_ring_create(NameT, 65536, rte_socket_id(), RING_F_SP_ENQ| RING_F_SC_DEQ);
+    		printf("%s\n",NameT);
+    }
+}
+
+//初始化环境，启动各个模块
 int
 main(int argc, char *argv[])
 {
@@ -717,47 +967,11 @@ main(int argc, char *argv[])
     int ret = rte_eal_init(argc, argv);
     if (ret < 0)
         rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
-    argc -= ret;
-    argv += ret;
-    /* Check that there is an even number of ports to send/receive on. */
+    
+    parse_conf();
     nb_ports = rte_eth_dev_count_avail();
     printf("%d ports find\n",nb_ports);
-
-    kafka_ring0_0 = rte_ring_create("kafka_ring0_0", 256*32, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    kafka_ring0_1 = rte_ring_create("kafka_ring0_1", 256*32, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    kafka_ring1_0 = rte_ring_create("kafka_ring1_0", 256*32, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    kafka_ring1_1 = rte_ring_create("kafka_ring1_1", 256*32, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    kafka_ring2_0 = rte_ring_create("kafka_ring2_0", 256*32, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    kafka_ring2_1 = rte_ring_create("kafka_ring2_1", 256*32, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    kafka_ring3_0 = rte_ring_create("kafka_ring3_0", 256*32, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    kafka_ring3_1 = rte_ring_create("kafka-ring3_1", 256*32, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    kafka_ring0_2 = rte_ring_create("kafka_ring0_2", 256*32, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    kafka_ring1_2 = rte_ring_create("kafka_ring1_2", 256*32, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    kafka_ring2_2 = rte_ring_create("kafka_ring2_2", 256*32, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    kafka_ring3_2 = rte_ring_create("kafka-ring3_2", 256*32, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-
-    mbuf_ring0 = rte_ring_create("mbuf_ring0", 256*64, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    mbuf_ring1 = rte_ring_create("mbuf_ring1", 256*64, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    mbuf_ring2 = rte_ring_create("mbuf_ring2", 256*64, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-    mbuf_ring3 = rte_ring_create("mbuf_ring3", 256*64, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-
-    mbuf_ring[0] = mbuf_ring0;
-    mbuf_ring[1] = mbuf_ring1;
-    mbuf_ring[2] = mbuf_ring2;
-    mbuf_ring[3] = mbuf_ring3;
-
-    ring_name[0] = kafka_ring0_0;
-    ring_name[1] = kafka_ring1_0;
-    ring_name[2] = kafka_ring2_0;
-    ring_name[3] = kafka_ring3_0;
-    ring_name[4] = kafka_ring0_1;
-    ring_name[5] = kafka_ring1_1;
-    ring_name[6] = kafka_ring2_1;
-    ring_name[7] = kafka_ring3_1;
-    ring_name[8] = kafka_ring0_2;
-    ring_name[9] = kafka_ring1_2;
-    ring_name[10] = kafka_ring2_2;
-    ring_name[11] = kafka_ring3_2;
+    
     mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS,
         MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
     if (mbuf_pool == NULL)
@@ -768,47 +982,50 @@ main(int argc, char *argv[])
             rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16 "\n",
                     portid);
 
-/* create an empty AC context  */
 
-if ((acx = rte_acl_create(&prm)) == NULL) {
-	printf("err in acx\n");
-    /* handle context create failure. */
+	/* create an empty AC context  */
+	if ((acx = rte_acl_create(&prm)) == NULL) {
+		printf("err in acx\n");
+		/* handle context create failure. */
 
-}
+	}
 
-/* add rules to the context */
-rule_number = ipv4_5_tuple_parse();
-ret = rte_acl_add_rules(acx, (const struct rte_acl_rule *)acl_rules, rule_number);
-if (ret != 0) {
-	printf("err in acl rules");
-   /* handle error at adding ACL rules. */
-}
+	/* add rules to the context */
+	global_conf.rule_number = ipv4_5_tuple_parse();
+	ret = rte_acl_add_rules(acx, (const struct rte_acl_rule *)acl_rules, global_conf.rule_number);
+	if (ret != 0) {
+		printf("err in acl rules");
+	/* handle error at adding ACL rules. */
+	}
 
-/* prepare AC build config. */
+	/* prepare AC build config. */
 
-//printf("%d categ\n",CATEGORIES);
+	cfg.num_categories = 4;
+	cfg.num_fields = RTE_DIM(ipv4_defs);
 
-cfg.num_categories = 4;
-cfg.num_fields = RTE_DIM(ipv4_defs);
+	memcpy(cfg.defs, ipv4_defs, sizeof (ipv4_defs));
 
-memcpy(cfg.defs, ipv4_defs, sizeof (ipv4_defs));
+	/* build the runtime structures for added rules, with 2 categories. */
+	ret = rte_acl_build(acx, &cfg);
+	if (ret != 0) {
+		printf("err in acl context\n");
+	/* handle error at build runtime structures for ACL context. */
+	}
 
-/* build the runtime structures for added rules, with 2 categories. */
-ret = rte_acl_build(acx, &cfg);
-if (ret != 0) {
-	printf("err in acl context\n");
-   /* handle error at build runtime structures for ACL context. */
-}
-
-rte_acl_dump(acx);
+	rte_acl_dump(acx);
 	int i;
-	for(i=4;i<8;i++)	
+	int pipe = global_conf.pipeline_num;
+	for(i=pipe;i<pipe*2;i++) // core pipe to 2pipe
+		rte_eal_remote_launch((lcore_function_t*)lcore_lru,NULL,i);
+	
+	for(i=pipe*2;i<pipe*3;i++) //core 2pipe to 3pipe	
 		rte_eal_remote_launch((lcore_function_t*)lcore_acl,NULL,i);
-		
-	for(i =8;i<20;i++){
+	
+	for(i=pipe*3;i<(pipe*3+pipe*global_conf.partition_use);i++){//core 3pipe to 3pipe+pipe*partition_num
 		rte_eal_remote_launch((lcore_function_t*)lcore_kafka,NULL,i);
 	}
-	for(i=1;i<4;i++)	
+	rte_eal_remote_launch((lcore_function_t*)lcore_info,NULL,i);
+	for(i=1;i<pipe;i++) //core 0 to pipe
 		rte_eal_remote_launch((lcore_function_t*)lcore_main,NULL,i);
 	lcore_main();
 	return 0;

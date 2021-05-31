@@ -1,0 +1,3 @@
+pipeline_num 4
+partition_use 4
+enable_lru 1
